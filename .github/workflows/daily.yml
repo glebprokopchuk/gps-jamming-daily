@@ -1,0 +1,81 @@
+name: daily
+
+# Once a day, after adsb.lol publishes yesterday's archive (~03:30 UTC): stream
+# the archive, keep only the aircraft tracks, score the squares, commit
+# data/latest.json. Public repo, so Actions minutes are free; nothing secret is
+# used beyond the built-in token.
+on:
+  schedule:
+    - cron: '30 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - name: Test the method
+        run: node --test
+
+      - name: Find the newest archive
+        id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # The archive repo is per year; early January, yesterday may be in last year's.
+          for year in "$(date -u +%Y)" "$(date -u -d '-2 days' +%Y)"; do
+            repo="adsblol/globe_history_${year}"
+            tag=$(gh api "repos/${repo}/releases?per_page=10" \
+              --jq '[.[] | select(.tag_name | endswith("-planes-readsb-prod-0"))][0].tag_name // empty' 2>/dev/null || true)
+            if [ -n "$tag" ]; then break; fi
+          done
+          if [ -z "$tag" ]; then echo "no prod archive found"; exit 1; fi
+          day=$(echo "$tag" | sed -E 's/^v([0-9]{4})\.([0-9]{2})\.([0-9]{2}).*/\1-\2-\3/')
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "day=$day" >> "$GITHUB_OUTPUT"
+          if [ -f data/latest.json ] && [ "$(jq -r .date data/latest.json)" = "$day" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "$day is already done"
+          fi
+
+      - name: Stream the archive (tracks only)
+        if: steps.find.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          urls=$(gh api "repos/${{ steps.find.outputs.repo }}/releases/tags/${{ steps.find.outputs.tag }}" \
+            --jq '[.assets[] | select(.name | test("\\.tar(\\.a[a-z])?$"))] | sort_by(.name) | .[].browser_download_url')
+          mkdir -p work
+          # The parts are one tar split by size: download them in order into one stream.
+          for u in $urls; do curl -sSfL --retry 3 --retry-delay 10 "$u"; done | tar -x -C work --wildcards './traces/*'
+          echo "trace files: $(find work/traces -type f | wc -l)"
+
+      - name: Score the squares
+        if: steps.find.outputs.skip != 'true'
+        run: |
+          mkdir -p data
+          node jam.mjs work/traces "${{ steps.find.outputs.day }}" data/latest.json
+
+      - name: Publish
+        if: steps.find.outputs.skip != 'true'
+        run: |
+          git config user.name "gps-jamming-daily"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/latest.json
+          git commit -m "data: ${{ steps.find.outputs.day }}"
+          git push

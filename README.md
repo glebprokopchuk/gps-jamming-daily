@@ -55,4 +55,10 @@ node jam.mjs <folder of readsb trace files> <YYYY-MM-DD> out.json
 No dependencies (Node 22+). The daily run is in
 [`.github/workflows/daily.yml`](.github/workflows/daily.yml).
 
-Code: MIT. Data: ODbL 1.0.
+## Licence
+
+- **Code** (`jam.mjs`, `jam.test.mjs`, the workflow): MIT, in [`LICENSE`](LICENSE).
+  MIT covers the code only.
+- **Data** (everything in [`data/`](data)): ODbL 1.0, full text in
+  [`data/LICENSE.md`](data/LICENSE.md). Contains information from adsb.lol,
+  made available under the ODbL 1.0.
